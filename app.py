@@ -9,12 +9,16 @@ from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from jose import JWTError, jwt
+import os
 
 # ---------- Конфигурация ----------
 SECRET_KEY = "supersecretkeychangeinproduction"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
-DB_NAME = "jobboard.db"
+
+DB_DIR = "/app/data"
+os.makedirs(DB_DIR, exist_ok=True)
+DB_NAME = os.path.join(DB_DIR, "jobboard.db")
 
 app = FastAPI(title="Биржа труда")
 
