@@ -9,16 +9,12 @@ from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from jose import JWTError, jwt
-import os
 
 # ---------- Конфигурация ----------
 SECRET_KEY = "supersecretkeychangeinproduction"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
-
-DB_DIR = "/app/data"
-os.makedirs(DB_DIR, exist_ok=True)
-DB_NAME = os.path.join(DB_DIR, "jobboard.db")
+DB_NAME = "jobboard.db"
 
 app = FastAPI(title="Биржа труда")
 
@@ -47,11 +43,7 @@ def get_db():
 def init_db():
     with get_db() as conn:
         conn.executescript("""
-        DROP TABLE IF EXISTS applications;
-        DROP TABLE IF EXISTS vacancies;
-        DROP TABLE IF EXISTS users;
-        
-        CREATE TABLE users (
+        CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
@@ -60,7 +52,7 @@ def init_db():
             role TEXT CHECK(role IN ('employer', 'applicant')) NOT NULL,
             resume TEXT DEFAULT ''
         );
-        CREATE TABLE vacancies (
+        CREATE TABLE IF NOT EXISTS vacancies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             description TEXT NOT NULL,
@@ -72,7 +64,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (employer_id) REFERENCES users(id)
         );
-        CREATE TABLE applications (
+        CREATE TABLE IF NOT EXISTS applications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             vacancy_id INTEGER NOT NULL,
             applicant_id INTEGER NOT NULL,
@@ -83,7 +75,7 @@ def init_db():
             FOREIGN KEY (applicant_id) REFERENCES users(id)
         );
         """)
-    print("База данных пересоздана.")
+    print("База данных готова.")
 
 # ---------- Модели Pydantic ----------
 class UserRegister(BaseModel):
@@ -174,12 +166,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         role: str = payload.get("role")
         if username is None or role is None:
             raise credentials_exception
-        token_data = TokenData(username=username, role=role)
     except JWTError:
         raise credentials_exception
 
     db = get_db()
-    user = db.execute("SELECT * FROM users WHERE username = ?", (token_data.username,)).fetchone()
+    user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     if user is None:
         raise credentials_exception
     return dict(user)
@@ -378,10 +369,11 @@ def create_application(app_data: ApplicationCreate, current_user: dict = Depends
     db.commit()
     last_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
     new_app = db.execute("SELECT * FROM applications WHERE id = ?", (last_id,)).fetchone()
+    user_data = db.execute("SELECT * FROM users WHERE id = ?", (current_user["id"],)).fetchone()
     result = dict(new_app)
-    result["applicant_name"] = current_user["full_name"]
-    result["applicant_email"] = current_user["email"]
-    result["applicant_resume"] = current_user.get("resume", "")
+    result["applicant_name"] = user_data["full_name"]
+    result["applicant_email"] = user_data["email"]
+    result["applicant_resume"] = user_data["resume"] or ""
     return result
 
 @app.get("/applications", response_model=List[ApplicationOut])
@@ -433,7 +425,7 @@ def change_application_status(
     updated = db.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
     return dict(updated)
 
-# ---------- Фронтенд с адаптивной мобильной версией ----------
+# ---------- Фронтенд ----------
 HTML_CONTENT = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -444,143 +436,119 @@ HTML_CONTENT = """
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Arial, sans-serif; background: #eef1f5; min-height: 100vh; }
-        .container { max-width: 960px; margin: 0 auto; padding: 24px; }
-        .header { background: #2c3e50; color: #fff; padding: 20px 28px; border-radius: 4px; margin-bottom: 20px; }
-        .header h1 { font-size: 24px; font-weight: 600; }
-        .header p { opacity: 0.7; margin-top: 4px; font-size: 14px; }
-        
-        /* Навигация */
-        nav { background: #fff; padding: 0; border-radius: 4px; margin-bottom: 20px; display: flex; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; flex-wrap: wrap; }
-        nav a { text-decoration: none; color: #555; padding: 14px 20px; cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
-        nav a:hover { color: #2c3e50; background: #f8f9fa; border-bottom-color: #3498db; }
-        nav a.logout-link { margin-left: auto; color: #c0392b; }
-        
-        /* Карточки */
-        .card { background: #fff; border-radius: 4px; padding: 20px 24px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-left: 3px solid #3498db; }
+        .container { width: 100%; max-width: 100%; padding: 0; }
+        .header { background: #2c3e50; color: #fff; padding: 16px 40px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; position: sticky; top: 0; z-index: 100; }
+        .header-left h1 { font-size: 22px; font-weight: 600; }
+        .header-left p { opacity: 0.7; font-size: 12px; margin-top: 2px; }
+        .header-nav { display: flex; gap: 4px; flex-wrap: wrap; }
+        .header-nav a { text-decoration: none; color: #ccd; padding: 8px 16px; cursor: pointer; font-size: 13px; border-radius: 20px; transition: all 0.2s; white-space: nowrap; }
+        .header-nav a:hover { color: #fff; background: rgba(255,255,255,0.12); }
+        .header-nav a.logout-link { color: #faa; }
+        .header-nav a.logout-link:hover { background: rgba(255,100,100,0.2); }
+        .main-content { padding: 24px 40px; max-width: 1200px; margin: 0 auto; }
+        .card { background: #fff; border-radius: 8px; padding: 20px 24px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-left: 3px solid #5b6e82; }
         .card h3 { font-size: 17px; color: #2c3e50; margin-bottom: 8px; }
         .card p { color: #555; font-size: 14px; line-height: 1.5; margin-bottom: 4px; }
         .card .meta { font-size: 13px; color: #888; margin-top: 6px; }
-        
-        /* Формы */
-        input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid #dde; border-radius: 4px; font-size: 14px; margin-bottom: 10px; font-family: inherit; }
-        input:focus, select:focus, textarea:focus { outline: none; border-color: #3498db; }
-        textarea { min-height: 90px; resize: vertical; }
-        
-        /* Кнопки */
-        button { padding: 10px 20px; border: none; border-radius: 4px; font-size: 14px; cursor: pointer; font-weight: 500; transition: background 0.2s; margin-right: 6px; margin-bottom: 6px; }
-        .btn-primary { background: #3498db; color: #fff; }
-        .btn-primary:hover { background: #2980b9; }
-        .btn-secondary { background: #95a5a6; color: #fff; }
-        .btn-secondary:hover { background: #7f8c8d; }
-        .btn-danger { background: #c0392b; color: #fff; }
-        .btn-danger:hover { background: #a93226; }
-        .btn-success { background: #27ae60; color: #fff; }
-        .btn-success:hover { background: #219a52; }
+        .vacancies-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        @media (max-width: 800px) { .vacancies-grid { grid-template-columns: 1fr; } }
+        input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid #dde; border-radius: 20px; font-size: 14px; margin-bottom: 10px; font-family: inherit; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #5b6e82; }
+        textarea { min-height: 90px; resize: vertical; border-radius: 12px; }
+        button { padding: 10px 24px; border: none; border-radius: 20px; font-size: 14px; cursor: pointer; font-weight: 500; transition: background 0.2s; margin-right: 6px; margin-bottom: 6px; }
+        .btn-primary { background: #3d5068; color: #fff; }
+        .btn-primary:hover { background: #2c3e50; }
+        .btn-secondary { background: #8899aa; color: #fff; }
+        .btn-secondary:hover { background: #6b7d8f; }
+        .btn-outline { background: #fff; color: #3d5068; border: 1px solid #3d5068; }
+        .btn-outline:hover { background: #f0f2f5; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
-        
-        /* Бейджи */
-        .badge { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 12px; font-weight: 600; }
-        .badge-active { background: #d5f5e3; color: #1e8449; }
-        .badge-inactive { background: #fadbd8; color: #922b21; }
-        .badge-pending { background: #fef9e7; color: #7d6608; }
-        .badge-accepted { background: #d5f5e3; color: #1e8449; }
-        .badge-rejected { background: #fadbd8; color: #922b21; }
-        .badge-applied { background: #d6eaf8; color: #1a5276; }
-        
-        /* Фильтр */
-        .filter-bar { background: #fff; padding: 16px 20px; border-radius: 4px; margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: end; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .badge-active { background: #dde4ea; color: #2c3e50; }
+        .badge-inactive { background: #e8e8e8; color: #777; }
+        .badge-pending { background: #eef1f5; color: #555; }
+        .badge-accepted { background: #dde4ea; color: #2c3e50; }
+        .badge-rejected { background: #e8e8e8; color: #777; }
+        .badge-applied { background: #d6dce4; color: #2c3e50; }
+        .filter-bar { background: #fff; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: end; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
         .filter-bar input { width: auto; flex: 1; min-width: 140px; margin-bottom: 0; }
-        
-        /* Остальное */
-        .error { background: #fadbd8; color: #922b21; padding: 10px 14px; border-radius: 4px; margin: 8px 0; font-size: 14px; }
-        .info-bar { background: #d6eaf8; color: #1a5276; padding: 12px 16px; border-radius: 4px; margin-bottom: 16px; font-size: 14px; }
+        .error { background: #f5f0f0; color: #666; padding: 10px 14px; border-radius: 8px; margin: 8px 0; font-size: 14px; }
+        .info-bar { background: #e9ecf1; color: #2c3e50; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
         .hidden { display: none; }
-        .form-card { background: #fff; border-radius: 4px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); max-width: 460px; margin: 0 auto; }
-        .form-card h3 { margin-bottom: 18px; color: #2c3e50; font-size: 18px; }
+        .form-card { background: #fff; border-radius: 8px; padding: 32px 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); max-width: 420px; margin: 60px auto; text-align: center; }
+        .form-card h3 { margin-bottom: 20px; color: #2c3e50; font-size: 18px; }
+        .form-card input, .form-card select { text-align: left; }
         .btn-group { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-        label { font-size: 14px; color: #555; display: block; margin-bottom: 4px; }
-        .resume-block { background: #f8f9fa; border-radius: 4px; padding: 12px 16px; margin: 8px 0; font-size: 14px; white-space: pre-wrap; color: #444; border-left: 3px solid #3498db; }
-        .applicant-info { background: #f8f9fa; border-radius: 4px; padding: 12px 16px; margin: 10px 0; }
+        label { font-size: 14px; color: #555; display: block; margin-bottom: 4px; text-align: left; }
+        .resume-block { background: #f5f6f8; border-radius: 8px; padding: 12px 16px; margin: 8px 0; font-size: 14px; white-space: pre-wrap; color: #444; border-left: 3px solid #5b6e82; }
+        .applicant-info { background: #f5f6f8; border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
         .applicant-info p { margin-bottom: 4px; }
-        
-        /* Медиа-запросы для мобильной версии */
+        .login-btn-block { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 16px; }
+        .login-btn-block button { width: 100%; max-width: 300px; margin-right: 0; }
         @media (max-width: 768px) {
-            .container { padding: 12px; }
-            .header { padding: 16px; border-radius: 0; margin: -12px -12px 16px -12px; }
-            .header h1 { font-size: 20px; }
-            .header p { font-size: 12px; }
-            
-            nav { border-radius: 0; margin: 0 -12px 16px -12px; flex-direction: column; }
-            nav a { padding: 12px 16px; border-bottom: 1px solid #eee; border-left: none; text-align: center; }
-            nav a.logout-link { margin-left: 0; background: #fadbd8; }
-            
-            .form-card { max-width: 100%; padding: 20px 16px; }
-            
+            .header { padding: 12px 16px; flex-direction: column; align-items: flex-start; }
+            .header-nav { width: 100%; }
+            .header-nav a { flex: 1; text-align: center; }
+            .main-content { padding: 16px; }
+            .vacancies-grid { grid-template-columns: 1fr; }
             .filter-bar { flex-direction: column; padding: 12px; }
             .filter-bar input { width: 100%; min-width: auto; }
-            
             .card { padding: 16px; }
-            .card h3 { font-size: 16px; }
-            
             .btn-group { flex-direction: column; }
             .btn-group button { width: 100%; margin-right: 0; }
             button { width: 100%; margin-right: 0; padding: 12px; font-size: 15px; }
-            
-            .applicant-info { padding: 10px; }
-            .resume-block { padding: 10px; }
-        }
-        
-        @media (max-width: 480px) {
-            body { font-size: 13px; }
-            .header h1 { font-size: 18px; }
-            .card h3 { font-size: 15px; }
-            .card p { font-size: 13px; }
-            input, select, textarea, button { font-size: 16px; }
-            .badge { font-size: 11px; padding: 2px 6px; }
+            .form-card { margin: 20px auto; padding: 24px 16px; }
         }
     </style>
 </head>
 <body>
 <div class="container">
     <div class="header">
-        <h1>Биржа труда</h1>
-        <p>Платформа для поиска работы и подбора персонала</p>
-    </div>
-
-    <nav id="mainNav" class="hidden">
-        <a onclick="showSection('vacancies')">Все вакансии</a>
-        <a onclick="showSection('createVacancy')" id="employerLinkCreate" class="hidden">Создать вакансию</a>
-        <a onclick="showSection('myVacancies')" id="employerLinkMy" class="hidden">Мои вакансии</a>
-        <a onclick="showSection('myApplications')" id="applicantLinkApps" class="hidden">Мои отклики</a>
-        <a onclick="showSection('profile')">Профиль</a>
-        <a onclick="logout()" class="logout-link">Выйти</a>
-    </nav>
-
-    <div id="authBlock">
-        <div id="loginForm" class="form-card">
-            <h3>Вход в систему</h3>
-            <input type="text" id="loginUsername" placeholder="Логин">
-            <input type="password" id="loginPassword" placeholder="Пароль">
-            <button class="btn-primary" onclick="login()">Войти</button>
-            <button class="btn-secondary" onclick="showRegister()">Регистрация</button>
-            <p id="loginError" class="error hidden"></p>
+        <div class="header-left">
+            <h1>Биржа труда</h1>
+            <p>Платформа для поиска работы и подбора персонала</p>
         </div>
-        <div id="registerForm" class="form-card hidden">
-            <h3>Регистрация</h3>
-            <input type="text" id="regUsername" placeholder="Логин">
-            <input type="password" id="regPassword" placeholder="Пароль">
-            <input type="text" id="regFullName" placeholder="Полное имя">
-            <input type="email" id="regEmail" placeholder="Email">
-            <select id="regRole">
-                <option value="applicant">Соискатель</option>
-                <option value="employer">Работодатель</option>
-            </select>
-            <button class="btn-primary" onclick="register()">Зарегистрироваться</button>
-            <button class="btn-secondary" onclick="showLogin()">Назад ко входу</button>
-            <p id="regError" class="error hidden"></p>
+        <div class="header-nav" id="mainNav">
+            <a onclick="showSection('vacancies')">Вакансии</a>
+            <a onclick="showSection('createVacancy')" id="employerLinkCreate" class="hidden">Создать вакансию</a>
+            <a onclick="showSection('myVacancies')" id="employerLinkMy" class="hidden">Мои вакансии</a>
+            <a onclick="showSection('myApplications')" id="applicantLinkApps" class="hidden">Мои отклики</a>
+            <a onclick="showSection('profile')">Профиль</a>
+            <a onclick="logout()" class="logout-link">Выйти</a>
         </div>
     </div>
-    <div id="content" class="hidden"></div>
+
+    <div class="main-content">
+        <div id="authBlock">
+            <div id="loginForm" class="form-card">
+                <h3>Вход в систему</h3>
+                <input type="text" id="loginUsername" placeholder="Логин">
+                <input type="password" id="loginPassword" placeholder="Пароль">
+                <div class="login-btn-block">
+                    <button class="btn-primary" onclick="login()">Войти</button>
+                    <button class="btn-secondary" onclick="showRegister()">Регистрация</button>
+                </div>
+                <p id="loginError" class="error hidden"></p>
+            </div>
+            <div id="registerForm" class="form-card hidden">
+                <h3>Регистрация</h3>
+                <input type="text" id="regUsername" placeholder="Логин">
+                <input type="password" id="regPassword" placeholder="Пароль">
+                <input type="text" id="regFullName" placeholder="Полное имя">
+                <input type="email" id="regEmail" placeholder="Email">
+                <select id="regRole">
+                    <option value="applicant">Соискатель</option>
+                    <option value="employer">Работодатель</option>
+                </select>
+                <div class="login-btn-block">
+                    <button class="btn-primary" onclick="register()">Зарегистрироваться</button>
+                    <button class="btn-secondary" onclick="showLogin()">Назад ко входу</button>
+                </div>
+                <p id="regError" class="error hidden"></p>
+            </div>
+        </div>
+        <div id="content" class="hidden"></div>
+    </div>
 </div>
 
 <script>
@@ -605,7 +573,7 @@ HTML_CONTENT = """
         try {
             currentUser = await api('/users/me');
             document.getElementById('authBlock').classList.add('hidden');
-            document.getElementById('mainNav').classList.remove('hidden');
+            document.getElementById('mainNav').style.display = 'flex';
             const role = currentUser.role;
             document.getElementById('employerLinkCreate').classList.toggle('hidden', role !== 'employer');
             document.getElementById('employerLinkMy').classList.toggle('hidden', role !== 'employer');
@@ -688,12 +656,15 @@ HTML_CONTENT = """
         myApplicationIds = [];
         localStorage.removeItem('token');
         document.getElementById('authBlock').classList.remove('hidden');
-        document.getElementById('mainNav').classList.add('hidden');
+        document.getElementById('mainNav').style.display = 'none';
         document.getElementById('content').classList.add('hidden');
+        document.getElementById('loginForm').classList.remove('hidden');
+        document.getElementById('registerForm').classList.add('hidden');
     }
 
     async function loadProfile() {
         const user = await api('/users/me');
+        currentUser = user;
         let html = '<h2>Профиль</h2><div class="card">';
         html += `<p><strong>Имя:</strong> ${user.full_name}</p>`;
         html += `<p><strong>Email:</strong> ${user.email}</p>`;
@@ -734,9 +705,7 @@ HTML_CONTENT = """
             currentUser = await api('/users/me', 'PUT', body);
             alert('Профиль обновлён');
             loadProfile();
-        } catch(e) {
-            alert('Ошибка: ' + e.message);
-        }
+        } catch(e) { alert('Ошибка: ' + e.message); }
     }
 
     async function loadVacancies() {
@@ -759,6 +728,7 @@ HTML_CONTENT = """
                 <button class="btn-primary" onclick="loadVacancies()">Искать</button>
             </div>`;
         if (data.length === 0) html += '<div class="info-bar">Вакансий не найдено</div>';
+        html += '<div class="vacancies-grid">';
         data.forEach(v => {
             const alreadyApplied = myApplicationIds.includes(v.id);
             html += `<div class="card">
@@ -773,6 +743,7 @@ HTML_CONTENT = """
                     : ''}
             </div>`;
         });
+        html += '</div>';
         document.getElementById('content').innerHTML = html;
     }
 
@@ -823,7 +794,7 @@ HTML_CONTENT = """
                 <p class="meta"><strong>Зарплата:</strong> ${v.salary ? v.salary + ' руб.' : 'не указана'} | <strong>Город:</strong> ${v.location || 'не указан'}</p>
                 <div class="btn-group">
                     <button class="btn-primary" onclick="editVacancy(${v.id})">Редактировать</button>
-                    <button class="btn-danger" onclick="deleteVacancy(${v.id})">Удалить</button>
+                    <button class="btn-outline" onclick="deleteVacancy(${v.id})">Удалить</button>
                     <button class="btn-secondary" onclick="viewApplications(${v.id})">Отклики</button>
                 </div></div>`;
         });
@@ -876,8 +847,8 @@ HTML_CONTENT = """
                 ${a.message ? `<p><strong>Сопроводительное письмо:</strong> ${a.message}</p>` : ''}
                 <p><strong>Статус:</strong> <span class="badge badge-${a.status}">${a.status === 'pending' ? 'На рассмотрении' : a.status === 'accepted' ? 'Принят' : 'Отклонён'}</span></p>
                 <div class="btn-group">
-                    <button class="btn-success" onclick="changeStatus(${a.id}, 'accepted')">Принять</button>
-                    <button class="btn-danger" onclick="changeStatus(${a.id}, 'rejected')">Отклонить</button>
+                    <button class="btn-primary" onclick="changeStatus(${a.id}, 'accepted')">Принять</button>
+                    <button class="btn-outline" onclick="changeStatus(${a.id}, 'rejected')">Отклонить</button>
                 </div></div>`;
         });
         document.getElementById('content').innerHTML = html;
