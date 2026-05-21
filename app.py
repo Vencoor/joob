@@ -508,7 +508,7 @@ HTML_CONTENT = """
             <h1>Биржа труда</h1>
             <p>Платформа для поиска работы и подбора персонала</p>
         </div>
-        <div class="header-nav" id="mainNav">
+        <div class="header-nav" id="mainNav" style="display:none;">
             <a onclick="showSection('vacancies')">Вакансии</a>
             <a onclick="showSection('createVacancy')" id="employerLinkCreate" class="hidden">Создать вакансию</a>
             <a onclick="showSection('myVacancies')" id="employerLinkMy" class="hidden">Мои вакансии</a>
